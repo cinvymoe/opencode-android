@@ -1,0 +1,4 @@
+[submodule "opencode"]
+	path = opencode
+	url = /mnt/sdb1/opencode/.worktrees/android
+	branch = android-platform-v2

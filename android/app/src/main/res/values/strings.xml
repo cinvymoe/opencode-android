@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenCode</string>
+    <string name="title_activity_main">OpenCode</string>
+    <string name="package_name">ai.opencode.app</string>
+    <string name="custom_url_scheme">ai.opencode.app</string>
+    <string name="background_service_notification_title">OpenCode</string>
+    <string name="background_service_notification_description">Keeping notifications alive in background</string>
+    <string name="background_service_notification_channel">Background</string>
+    <string name="notification_response_ready_title">Response ready</string>
+    <string name="notification_failed_title">Session failed</string>
+    <string name="notification_question_title">Input needs response</string>
+    <string name="notification_permission_title">Permission needs input</string>
+    <string name="notification_alerts_channel_name">Task alerts</string>
+    <string name="notification_session_fallback">OpenCode session</string>
+</resources>

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-android",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "rm -rf www && VITE_PLATFORM=android bun run --cwd opencode/packages/app build && cp -R opencode/packages/app/dist www",
+    "sync": "bun run build:web && bunx cap sync android",
+    "dev": "bunx cap run android",
+    "open": "bunx cap open android",
+    "apk": "cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/keyboard": "^8.0.0",
+    "@capacitor/local-notifications": "8.3.1",
+    "@capacitor/preferences": "^8.0.0",
+    "@capacitor/share": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  }
+}
