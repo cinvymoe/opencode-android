@@ -1,12 +1,13 @@
 # opencode-android
 
-Standalone Capacitor 8 shell for the opencode android app. The web layer (platform abstraction, android entry, notifications UI) lives in the pinned `opencode` fork; this repo owns the native project and the build/sync chain.
+Standalone Capacitor 8 shell for the opencode android app. The `opencode` submodule tracks the **vanilla upstream `v2` branch**; the android adaptation is carried in this repo as `overlay/android-app.patch`, applied onto the submodule at build time and reversed afterwards. The opencode tree itself stays patch-free.
 
 ## Layout
 
-- `opencode/` — git submodule pinned to the fork (`anomalyco/opencode`) branch `android-platform-v2`. The android app variant lives in `opencode/packages/app`.
+- `opencode/` — git submodule tracking the upstream fork (`anomalyco/opencode`) branch `v2`. Contains NO android code in its committed state.
+- `overlay/android-app.patch` — the android app-layer adaptation (platform abstraction, `VITE_PLATFORM` entry, Capacitor factory, notifications UI), generated from the fork worktree. Applied with `git apply --3way` before each build, reversed after.
 - `android/` — Capacitor 8 native project (`ai.opencode.app`).
-- `capacitor.config.ts` — `webDir: "www"`; `sync` builds the submodule's `packages/app` with `VITE_PLATFORM=android` into `www/`.
+- `capacitor.config.ts` — `webDir: "www"`; `sync` builds the patched submodule's `packages/app` with `VITE_PLATFORM=android` into `www/`.
 - `www/` — generated web bundle, gitignored. Never edit or commit.
 
 ## Prerequisites
@@ -32,14 +33,19 @@ bun run apk          # cd android && ./gradlew assembleDebug
 
 `bun run dev` runs `cap run android`; `bun run open` opens the native project in Android Studio.
 
-## Upstream sync flow (v2 → fork → shell)
+## Upstream v2 + overlay model
 
-1. In the fork, merge `v2` into `android-platform-v2` and commit. The app-level android adaptation (platform abstraction, `VITE_PLATFORM` entry, Capacitor factory) lives there and is the source of truth for app behavior — see its `specs/android-platform/spec.md`.
-2. In this repo, update the pinned commit: `git submodule update --remote opencode`.
-3. Commit the moved submodule pointer.
-4. Re-sync and rebuild: `bun run sync && bun run apk`.
+The submodule rides upstream `v2` directly — no android branch needs to exist on the remote. `build:web` applies the overlay patch (`git apply --3way`), builds with `VITE_PLATFORM=android`, then reverse-applies it, so the submodule tree returns to pristine v2 after every build.
 
-Keep syncs small and frequent; large gaps between syncs are what made the old `feature/android-app` branch painful to maintain.
+When upstream `v2` moves:
+
+1. Bump the pin: `git -C opencode fetch origin && git -C opencode checkout <new-v2-commit>` and commit the moved gitlink.
+2. Re-apply the overlay: `git -C opencode apply --3way overlay/android-app.patch` (run from the repo root).
+   - Clean apply → done; regenerate nothing.
+   - Conflict → resolve it in the submodule tree, then regenerate the patch against the new pin: `git -C opencode diff <new-v2-commit> -- packages/app > overlay/android-app.patch`. Commit patch and gitlink together.
+3. Verify: `bun run sync && bun run apk`.
+
+Upstream `v2` moves fast (it gained ~37k lines under `packages/app` in the last week of Sep 2026) and its history occasionally gets rewritten — expect to redo the conflict step regularly. Conflicts surface as loud build failures, which is the point: the overlay can never silently drift.
 
 ## Native customizations (intentional — do not remove)
 

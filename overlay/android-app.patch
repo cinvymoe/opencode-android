@@ -1,0 +1,616 @@
+diff --git a/packages/app/package.json b/packages/app/package.json
+index 626bc6d37e..a55d190e88 100644
+--- a/packages/app/package.json
++++ b/packages/app/package.json
+@@ -56,6 +56,12 @@
+     "vite-plugin-solid": "2.11.14"
+   },
+   "dependencies": {
++    "@capacitor/app": "^8.0.0",
++    "@capacitor/core": "^8.0.0",
++    "@capacitor/local-notifications": "8.3.1",
++    "@capacitor/preferences": "^8.0.0",
++    "@capacitor/share": "^8.0.0",
++    "@capacitor/status-bar": "^8.0.0",
+     "@corvu/drawer": "catalog:",
+     "@dnd-kit/abstract": "0.5.0",
+     "@dnd-kit/dom": "0.5.0",
+diff --git a/packages/app/src/android-back-handler.tsx b/packages/app/src/android-back-handler.tsx
+new file mode 100644
+index 0000000000..95f1830d01
+--- /dev/null
++++ b/packages/app/src/android-back-handler.tsx
+@@ -0,0 +1,33 @@
++import { onCleanup, onMount } from "solid-js"
++import { useLocation } from "@solidjs/router"
++import { usePlatform } from "@/runtime/platform/platform"
++
++/**
++ * Handles the Android hardware back button.
++ * - In any sub-route: browser back
++ * - On home screen: return false so the platform exits the app (App.exitApp)
++ */
++export function AndroidBackHandler() {
++  const platform = usePlatform()
++  const location = useLocation()
++
++  onMount(() => {
++    if (platform.platform !== "android") return
++    if (!platform.onBackPressed) return
++
++    const cleanup = platform.onBackPressed(() => {
++      const path = location.pathname
++
++      // On home screen — return false so the platform exits the app (App.exitApp)
++      if (path === "/") return false
++
++      // In any sub-route — browser back
++      window.history.back()
++      return true
++    })
++
++    onCleanup(cleanup)
++  })
++
++  return null
++}
+diff --git a/packages/app/src/android-status-bar.tsx b/packages/app/src/android-status-bar.tsx
+new file mode 100644
+index 0000000000..c45d2f9261
+--- /dev/null
++++ b/packages/app/src/android-status-bar.tsx
+@@ -0,0 +1,20 @@
++import { createEffect } from "solid-js"
++import { useTheme } from "@opencode/ui/theme/context"
++import { usePlatform } from "@/runtime/platform/platform"
++
++/**
++ * Syncs the Android status bar style with the resolved color scheme.
++ * v2 has no per-platform theme effect; the desktop window theme is owned elsewhere.
++ */
++export function AndroidStatusBar() {
++  const platform = usePlatform()
++  const theme = useTheme()
++
++  createEffect(() => {
++    if (platform.platform !== "android") return
++    if (!platform.setStatusBarStyle) return
++    void platform.setStatusBarStyle(theme.mode() === "dark" ? "dark" : "light")
++  })
++
++  return null
++}
+diff --git a/packages/app/src/entry.tsx b/packages/app/src/entry.tsx
+index e31e28fd08..37de7c4451 100644
+--- a/packages/app/src/entry.tsx
++++ b/packages/app/src/entry.tsx
+@@ -14,6 +14,8 @@ import zh from "@/runtime/i18n/zh"
+ import { authFromToken } from "@/runtime/server/api"
+ import pkg from "../package.json"
+ import { ServerConnection } from "@/runtime/server/registry"
++import { AndroidBackHandler } from "./android-back-handler"
++import { AndroidStatusBar } from "./android-status-bar"
+ 
+ const getLocale = () => {
+   if (typeof navigator !== "object") return "en" as const
+@@ -43,8 +45,6 @@ const clearAuthToken = () => {
+   history.replaceState(null, "", location.pathname + (params.size ? `?${params}` : "") + location.hash)
+ }
+ 
+-const web = createWebPlatform(pkg.version)
+-
+ if (import.meta.env.PROD && "serviceWorker" in navigator) {
+   window.addEventListener("load", () => void navigator.serviceWorker.register("/sw.js"), { once: true })
+ }
+@@ -68,41 +68,67 @@ if (import.meta.env.VITE_SENTRY_DSN) {
+   })
+ }
+ 
+-if (root instanceof HTMLElement && root.dataset.opencodeMounted === undefined) {
++const boot = async () => {
++  if (!(root instanceof HTMLElement)) return
++  if (root.dataset.opencodeMounted !== undefined) return
+   // Lazy chunks can import the entry chunk back under a distinct URL, so claim the root before async startup.
+   root.dataset.opencodeMounted = ""
+-  void loadInitialLocale().then((locale) => {
+-    const auth = authFromToken(new URLSearchParams(location.search).get("auth_token"))
+-    clearAuthToken()
+-    const standalone = isStandalone()
+-    root.dataset.standalone = String(standalone)
+-    if (standalone) restorePwaRoute()
+-    const server: ServerConnection.Http | undefined = web.currentServerUrl
+-      ? {
+-          type: "http",
+-          authToken: !!auth,
+-          http: {
+-            url: web.currentServerUrl,
+-            ...auth,
+-          },
+-        }
+-      : undefined
+-    render(
+-      () => (
+-        <PlatformProvider value={web.platform}>
+-          <AppBaseProviders locale={locale}>
+-            <AppInterface
+-              defaultServer={web.defaultServerUrl ? ServerConnection.Key.make(web.defaultServerUrl) : undefined}
+-              canonicalLocalServer={server ? ServerConnection.key(server) : undefined}
+-              servers={server ? [server] : []}
+-            >
+-              <KeyboardInsets />
+-              {standalone && <PwaRoutePersistence />}
+-            </AppInterface>
+-          </AppBaseProviders>
+-        </PlatformProvider>
+-      ),
+-      root,
+-    )
+-  })
++
++  const locale = await loadInitialLocale()
++  const auth = authFromToken(new URLSearchParams(location.search).get("auth_token"))
++  clearAuthToken()
++  const standalone = isStandalone()
++  root.dataset.standalone = String(standalone)
++  if (standalone) restorePwaRoute()
++
++  const web = createWebPlatform(pkg.version)
++  const platform = import.meta.env.VITE_PLATFORM === "android" ? await loadAndroidPlatform(pkg.version) : web.platform
++  // android resolves its default server asynchronously from Capacitor Preferences;
++  // the web platform exposes the same value synchronously as web.defaultServerUrl.
++  const stored = platform === web.platform ? web.defaultServerUrl : await platform.getDefaultServer?.()
++  const defaultServer = stored ? ServerConnection.Key.make(stored) : undefined
++  const currentServerUrl = platform === web.platform ? web.currentServerUrl : (stored ?? undefined)
++
++  const server: ServerConnection.Http | undefined = currentServerUrl
++    ? {
++        type: "http",
++        authToken: !!auth,
++        http: {
++          url: currentServerUrl,
++          ...auth,
++        },
++      }
++    : undefined
++
++  render(
++    () => (
++      <PlatformProvider value={platform}>
++        <AppBaseProviders locale={locale}>
++          <AppInterface
++            defaultServer={defaultServer}
++            canonicalLocalServer={server ? ServerConnection.key(server) : undefined}
++            servers={server ? [server] : []}
++          >
++            <KeyboardInsets />
++            {standalone && <PwaRoutePersistence />}
++            {platform.platform === "android" && (
++              <>
++                <AndroidStatusBar />
++                <AndroidBackHandler />
++              </>
++            )}
++          </AppInterface>
++        </AppBaseProviders>
++      </PlatformProvider>
++    ),
++    root,
++  )
++}
++
++void boot()
++
++// Branch-scoped so the dynamic import stays lazy: @capacitor/* never enters the web bundle.
++async function loadAndroidPlatform(version: string) {
++  const { createAndroidPlatform } = await import("./runtime/platform/android")
++  return createAndroidPlatform(version)
+ }
+diff --git a/packages/app/src/env.d.ts b/packages/app/src/env.d.ts
+index a55450a7e7..1fcc820c38 100644
+--- a/packages/app/src/env.d.ts
++++ b/packages/app/src/env.d.ts
+@@ -3,6 +3,7 @@ interface ImportMetaEnv {
+   readonly VITE_OPENCODE_SERVER_HOST: string
+   readonly VITE_OPENCODE_SERVER_PORT: string
+   readonly VITE_OPENCODE_CHANNEL?: "local" | "dev" | "beta" | "prod"
++  readonly VITE_PLATFORM?: "web" | "android"
+ 
+   readonly VITE_SENTRY_DSN?: string
+   readonly VITE_SENTRY_ENVIRONMENT?: string
+diff --git a/packages/app/src/index.css b/packages/app/src/index.css
+index 05e0ab19ef..35c0e934ae 100644
+--- a/packages/app/src/index.css
++++ b/packages/app/src/index.css
+@@ -3,6 +3,15 @@
+ @import "@opencode/ui/styles/tokens";
+ @import "tw-animate-css";
+ 
++/* Safe-area insets as custom properties so platform code can read them via
++   getComputedStyle. An inline style on <html> still overrides these. */
++:root {
++  --safe-area-inset-top: env(safe-area-inset-top, 0px);
++  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
++  --safe-area-inset-left: env(safe-area-inset-left, 0px);
++  --safe-area-inset-right: env(safe-area-inset-right, 0px);
++}
++
+ @font-face {
+   font-family: "JetBrainsMono Nerd Font Mono";
+   src: url("/assets/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+diff --git a/packages/app/src/runtime/i18n/en.ts b/packages/app/src/runtime/i18n/en.ts
+index 0c44e05dad..d6766f116f 100644
+--- a/packages/app/src/runtime/i18n/en.ts
++++ b/packages/app/src/runtime/i18n/en.ts
+@@ -1407,6 +1407,8 @@ export const dict = {
+   "settings.general.notifications.agent.title": "Agent",
+   "settings.general.notifications.agent.description":
+     "Show system notification when the agent is complete or needs attention",
++  "settings.general.notifications.questions.title": "Questions",
++  "settings.general.notifications.questions.description": "Show system notification when the agent asks a question",
+   "settings.general.notifications.permissions.title": "Permissions",
+   "settings.general.notifications.permissions.description": "Show system notification when a permission is required",
+   "settings.general.notifications.errors.title": "Errors",
+diff --git a/packages/app/src/runtime/platform/android.ts b/packages/app/src/runtime/platform/android.ts
+new file mode 100644
+index 0000000000..4f87cba8e2
+--- /dev/null
++++ b/packages/app/src/runtime/platform/android.ts
+@@ -0,0 +1,117 @@
++import { App } from "@capacitor/app"
++import { LocalNotifications } from "@capacitor/local-notifications"
++import { Preferences } from "@capacitor/preferences"
++import { Share } from "@capacitor/share"
++import { StatusBar, Style } from "@capacitor/status-bar"
++import { ServerConnection } from "@/runtime/server/registry"
++import type { Platform } from "./platform"
++
++const DEFAULT_SERVER_KEY = "opencode.android.defaultServer"
++const SERVER_PASSWORD_KEY = "opencode.android.defaultServerPassword"
++// Mirrors foreground state so the native SSE watcher can suppress duplicate
++// notifications while the app is visible (the web layer owns that case).
++const NOTIFICATION_MUTED_KEY = "opencode.android.notifications.muted"
++
++const setNotificationMuted = (muted: boolean) =>
++  Preferences.set({ key: NOTIFICATION_MUTED_KEY, value: muted ? "1" : "0" }).catch(() => {})
++
++const watchNotificationMuted = () => {
++  if (typeof document === "undefined") return
++  const update = () => void setNotificationMuted(document.visibilityState === "visible")
++  document.addEventListener("visibilitychange", update)
++  update()
++}
++
++// In-page click callbacks keyed by native notification id. They only survive
++// while this WebView lives: a cold-start tap launches the app through the OS
++// intent, but cannot restore the callback registered by the previous process,
++// so we intentionally settle for "tap opens the app" instead of replaying a
++// deep link (there is no durable payload to reconstruct one from).
++const notificationClicks = new Map<number, () => void>()
++let nextNotificationID = 1
++
++const inset = (prop: string) => {
++  const value = getComputedStyle(document.documentElement).getPropertyValue(prop)
++  return Number.parseFloat(value) || 0
++}
++
++export async function createAndroidPlatform(version: string): Promise<Platform> {
++  watchNotificationMuted()
++  void LocalNotifications.addListener("localNotificationActionPerformed", (notification) => {
++    const click = notificationClicks.get(notification.notification.id)
++    notificationClicks.delete(notification.notification.id)
++    window.focus()
++    click?.()
++  })
++
++  return {
++    platform: "android",
++    version,
++
++    openExternal(url) {
++      if (!URL.canParse(url)) return
++      window.open(url, "_blank", "noopener,noreferrer")
++    },
++
++    restart: async () => window.location.reload(),
++
++    // Android WebView has no Notification constructor, so this must go through
++    // the native LocalNotifications plugin (schedule, not notify: 8.x API).
++    async notify(title, description, onClick) {
++      if (document.visibilityState === "visible" && document.hasFocus()) return
++      const permission = await LocalNotifications.requestPermissions().catch(() => ({ display: "denied" as const }))
++      if (permission.display !== "granted") return
++      const id = nextNotificationID++
++      if (onClick) notificationClicks.set(id, onClick)
++      await LocalNotifications.schedule({
++        notifications: [{ id, title, body: description ?? "", channelId: "opencode_alerts" }],
++      }).catch(() => {
++        notificationClicks.delete(id)
++      })
++    },
++
++    async getDefaultServer() {
++      const { value } = await Preferences.get({ key: DEFAULT_SERVER_KEY })
++      return value ? ServerConnection.Key.make(value) : null
++    },
++
++    async setDefaultServer(url) {
++      if (url === null) {
++        await Preferences.remove({ key: DEFAULT_SERVER_KEY })
++        await Preferences.remove({ key: SERVER_PASSWORD_KEY })
++        return
++      }
++      await Preferences.set({ key: DEFAULT_SERVER_KEY, value: url })
++    },
++
++    async setServerPassword(password) {
++      await Preferences.set({ key: SERVER_PASSWORD_KEY, value: password })
++    },
++
++    async share(opts) {
++      await Share.share(opts)
++    },
++
++    onBackPressed(callback) {
++      const listener = App.addListener("backButton", () => {
++        if (!callback()) void App.exitApp()
++      })
++      return () => {
++        void listener.then((handle) => handle.remove())
++      }
++    },
++
++    getSafeAreaInsets() {
++      return {
++        top: inset("--safe-area-inset-top"),
++        bottom: inset("--safe-area-inset-bottom"),
++        left: inset("--safe-area-inset-left"),
++        right: inset("--safe-area-inset-right"),
++      }
++    },
++
++    async setStatusBarStyle(style) {
++      await StatusBar.setStyle({ style: style === "dark" ? Style.Dark : Style.Light })
++    },
++  }
++}
+diff --git a/packages/app/src/runtime/platform/platform.tsx b/packages/app/src/runtime/platform/platform.tsx
+index d784f2f9a8..75281fe282 100644
+--- a/packages/app/src/runtime/platform/platform.tsx
++++ b/packages/app/src/runtime/platform/platform.tsx
+@@ -19,7 +19,7 @@ type OpenAttachmentPickerOptions = {
+   defaultPath?: string
+ }
+ type SaveFilePickerOptions = { title?: string; defaultPath?: string }
+-type PlatformName = "web" | "desktop"
++type PlatformName = "web" | "desktop" | "android"
+ type DesktopOS = "macos" | "windows" | "linux"
+ 
+ export type PairingInfo = {
+@@ -92,6 +92,9 @@ type PlatformBase = {
+   /** Set the default server URL to use on app startup (platform-specific) */
+   setDefaultServer?(url: ServerConnection.Key | null): Promise<void> | void
+ 
++  /** Store the active server password for native background consumers (Android only) */
++  setServerPassword?(password: string): Promise<void> | void
++
+   /** Manage WSL sidecar servers (Electron on Windows only) */
+   wslServers?: WslServersPlatform
+   sshServers?: SshPlatform
+@@ -142,6 +145,18 @@ type PlatformBase = {
+     /** Single-use code for an `/auth/connect/:code` link. */
+     code(): Promise<string>
+   }
++
++  /** Share content through the platform share sheet (android only) */
++  share?(opts: { title?: string; text?: string; url?: string }): Promise<void>
++
++  /** Register a hardware back button handler; return false to let the system handle it (android only) */
++  onBackPressed?(callback: () => boolean): () => void
++
++  /** Read system bar insets resolved from CSS env() (android only) */
++  getSafeAreaInsets?(): { top: number; bottom: number; left: number; right: number }
++
++  /** Set the status bar style (android only) */
++  setStatusBarStyle?(style: "dark" | "light"): Promise<void>
+ }
+ 
+ export type Platform = PlatformBase &
+@@ -154,6 +169,7 @@ export type Platform = PlatformBase &
+         windowID: string
+         openDirectoryPickerDialog(opts?: OpenDirectoryPickerOptions): Promise<PickerPaths>
+       }
++    | { platform: "android"; os?: never; windowID?: never }
+   )
+ 
+ export const { use: usePlatform, provider: PlatformProvider } = createSimpleContext({
+diff --git a/packages/app/src/settings/model.test.ts b/packages/app/src/settings/model.test.ts
+index e73e829c7a..73bb68a65d 100644
+--- a/packages/app/src/settings/model.test.ts
++++ b/packages/app/src/settings/model.test.ts
+@@ -88,7 +88,7 @@ describe("settings schema", () => {
+       keybinds: {},
+       permissions: { autoApprove: false },
+       workspaces: { defaultDestination: "last-used", lastUsed: {} },
+-      notifications: { agent: true, permissions: true, errors: false },
++      notifications: { agent: true, questions: true, permissions: true, errors: false },
+       sounds: {
+         agentEnabled: true,
+         agent: "staplebops-01",
+@@ -133,7 +133,7 @@ describe("settings schema", () => {
+     expect(settings.permissions.autoApprove).toBe(true)
+     expect(settings.workspaces).toEqual({ defaultDestination: "new", lastUsed: { good: "workspace" } })
+     expect(settings.keybinds).toEqual({ good: "ctrl+k" })
+-    expect(settings.notifications).toEqual({ agent: false, permissions: true, errors: true })
++    expect(settings.notifications).toEqual({ agent: false, questions: true, permissions: true, errors: true })
+     expect(settings.sounds).toMatchObject({ agent: "custom", agentEnabled: false, permissions: "staplebops-02" })
+     expect(decode(encode(settings))).toEqual(settings)
+   })
+diff --git a/packages/app/src/settings/model.tsx b/packages/app/src/settings/model.tsx
+index 8a01d93427..237d8b3c04 100644
+--- a/packages/app/src/settings/model.tsx
++++ b/packages/app/src/settings/model.tsx
+@@ -116,6 +116,7 @@ const workspacesSchema = Persistence.struct({
+ 
+ const notificationsSchema = Persistence.struct({
+   agent: Schema.Boolean,
++  questions: Schema.Boolean,
+   permissions: Schema.Boolean,
+   errors: Schema.Boolean,
+ })
+@@ -253,7 +254,7 @@ export const defaultSettings: Settings = {
+   keybinds: {},
+   permissions: { autoApprove: false },
+   workspaces: { defaultDestination: "last-used", lastUsed: {} },
+-  notifications: { agent: true, permissions: true, errors: false },
++  notifications: { agent: true, questions: true, permissions: true, errors: false },
+   sounds: {
+     agentEnabled: true,
+     agent: "staplebops-01",
+@@ -445,6 +446,10 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
+         setAgent(value: boolean) {
+           setStore("notifications", "agent", value)
+         },
++        questions: withFallback(() => store.notifications?.questions, defaultSettings.notifications.questions),
++        setQuestions(value: boolean) {
++          setStore("notifications", "questions", value)
++        },
+         permissions: withFallback(() => store.notifications?.permissions, defaultSettings.notifications.permissions),
+         setPermissions(value: boolean) {
+           setStore("notifications", "permissions", value)
+diff --git a/packages/app/src/settings/notifications/notifications.tsx b/packages/app/src/settings/notifications/notifications.tsx
+index d8e72c54d2..c339b78c3f 100644
+--- a/packages/app/src/settings/notifications/notifications.tsx
++++ b/packages/app/src/settings/notifications/notifications.tsx
+@@ -87,6 +87,18 @@ export const SettingsNotifications: Component = () => {
+               </div>
+             </SettingsRow>
+ 
++            <SettingsRow
++              title={language.t("settings.general.notifications.questions.title")}
++              description={language.t("settings.general.notifications.questions.description")}
++            >
++              <div data-action="settings-notifications-questions">
++                <Switch
++                  checked={settings.notifications.questions()}
++                  onChange={(checked) => settings.notifications.setQuestions(checked)}
++                />
++              </div>
++            </SettingsRow>
++
+             <SettingsRow
+               title={language.t("settings.general.notifications.permissions.title")}
+               description={language.t("settings.general.notifications.permissions.description")}
+diff --git a/packages/app/src/shell/notifications/notification.tsx b/packages/app/src/shell/notifications/notification.tsx
+index 55e435fb23..7b58e2195b 100644
+--- a/packages/app/src/shell/notifications/notification.tsx
++++ b/packages/app/src/shell/notifications/notification.tsx
+@@ -127,6 +127,30 @@ export function createServerNotificationState(input: {
+   const tabs = useTabs()
+   const empty: Notification[] = []
+ 
++  // The native background watcher reads the server URL from Capacitor Preferences,
++  // which the WebView cannot write while suspended; mirror it while JS is alive.
++  if (platform.platform === "android") {
++    void platform.setDefaultServer?.(input.key)
++    const password = input.sdk.server.http.password
++    if (password) void platform.setServerPassword?.(password)
++  }
++
++  // Native notification taps arrive as opencode://session/<id> deep links.
++  let deepLink: { remove: () => Promise<void> } | undefined
++  if (platform.platform === "android") {
++    void import("@capacitor/app").then(({ App }) =>
++      App.addListener("appUrlOpen", ({ url }) => {
++        if (meta.disposed) return
++        const sessionID = /^opencode:\/\/session\/([^/?]+)/.exec(url)?.[1]
++        if (!sessionID) return
++        openNotificationSession(tabs, input.key, sessionID)
++      }).then((handle) => {
++        if (meta.disposed) return void handle.remove()
++        deepLink = handle
++      }),
++    )
++  }
++
+   const [store, setStore, _, ready] = persisted(
+     Persist.serverGlobal(input.sdk.scope, "notification"),
+     NotificationStore,
+@@ -280,7 +304,58 @@ export function createServerNotificationState(input: {
+     })
+   }
+ 
++  // Dedup mid-run question notifications by form/permission id so a replayed
++  // created event never notifies twice; answered items can ask again later.
++  const questioned = new Set<string>()
++  const permissioned = new Set<string>()
++
++  const notifyQuestion = (eventID: string, sessionID: string, id: string, title: string) => {
++    if (questioned.has(id)) return
++    questioned.add(id)
++    if (!settings.notifications.questions()) return
++    void lookup(sessionID).then((session) => {
++      if (meta.disposed) return
++      if (!session) return
++      if (session.parentID) return
++      void input.coordinator.system(`${input.key}\0${eventID}`, () =>
++        platform.notify(title, session.title ?? sessionID, () => openNotificationSession(tabs, input.key, sessionID)),
++      )
++    })
++  }
++
++  const notifyPermission = (eventID: string, sessionID: string, id: string) => {
++    if (permissioned.has(id)) return
++    permissioned.add(id)
++    if (!settings.notifications.permissions()) return
++    void lookup(sessionID).then((session) => {
++      if (meta.disposed) return
++      if (!session) return
++      if (session.parentID) return
++      void input.coordinator.system(`${input.key}\0${eventID}`, () =>
++        platform.notify(language.t("notification.permission.title"), session.title ?? sessionID, () =>
++          openNotificationSession(tabs, input.key, sessionID),
++        ),
++      )
++    })
++  }
++
+   const unsub = input.sdk.event.listen((event) => {
++    if (event.type === "form.created") {
++      notifyQuestion(event.id, event.data.form.sessionID, event.data.form.id, language.t("notification.question.title"))
++      return
++    }
++    if (event.type === "form.replied" || event.type === "form.cancelled") {
++      questioned.delete(event.data.id)
++      return
++    }
++    if (event.type === "permission.asked") {
++      notifyPermission(event.id, event.data.sessionID, event.data.id)
++      return
++    }
++    if (event.type === "permission.replied") {
++      permissioned.delete(event.data.requestID)
++      return
++    }
+     if (event.type !== "session.execution.succeeded" && event.type !== "session.execution.failed") return
+ 
+     const time = Date.now()
+@@ -293,6 +368,7 @@ export function createServerNotificationState(input: {
+   onCleanup(() => {
+     meta.disposed = true
+     unsub()
++    if (deepLink) void deepLink.remove()
+   })
+ 
+   return {
+diff --git a/packages/app/vite.js b/packages/app/vite.js
+index c64b5bf40c..8dbe03ab14 100644
+--- a/packages/app/vite.js
++++ b/packages/app/vite.js
+@@ -58,6 +58,7 @@ export default [
+         },
+         define: {
+           "import.meta.env.VITE_OPENCODE_CHANNEL": JSON.stringify(channel),
++          "import.meta.env.VITE_PLATFORM": JSON.stringify(process.env.VITE_PLATFORM || "web"),
+         },
+         worker: {
+           format: "es",

@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:web": "rm -rf www && VITE_PLATFORM=android bun run --cwd opencode/packages/app build && cp -R opencode/packages/app/dist www",
+    "build:web": "git -C opencode reset -q 2>/dev/null; git -C opencode apply -R ../overlay/android-app.patch 2>/dev/null; git -C opencode checkout -- bun.lock 2>/dev/null; git -C opencode apply --3way ../overlay/android-app.patch && bun install --cwd opencode && rm -rf www && VITE_PLATFORM=android bun run --cwd opencode/packages/app build && cp -R opencode/packages/app/dist www && git -C opencode reset -q && git -C opencode apply -R ../overlay/android-app.patch && git -C opencode checkout -- bun.lock",
     "sync": "bun run build:web && bunx cap sync android",
     "dev": "bunx cap run android",
     "open": "bunx cap open android",
